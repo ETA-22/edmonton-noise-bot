@@ -1,0 +1,4 @@
+{
+  "summary": "Process supervisor for running both the Web Dashboard and Audio Detector concurrently with hot-reloading.",
+  "updatedAt": "2026-08-30T21:53:23.913290300Z"
+}

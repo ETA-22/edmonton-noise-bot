@@ -1,0 +1,43 @@
+{
+  "admin_passcode": "admin123",
+  "location_name": "Balcony",
+  "street_name": "98th Ave",
+  "floor_number": 3,
+  "floor_height_meters": 3.0,
+  "horizontal_setback_meters": 5.0,
+  "distance_to_road_meters": 10.3,
+  "audio_device_index": null,
+  "threshold_dba": 75.0,
+  "calibration_offset": 50.0,
+  "cooldown_period_minutes": 2,
+  "record_event_seconds": 8,
+  "save_audio_files": true,
+  "output_directory": "./recordings",
+  "email": {
+    "enabled": false,
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "sender_email": "",
+    "sender_password": "",
+    "recipient_emails": [],
+    "subject_prefix": "[Noise Complaint Alert] Traffic Noise"
+  },
+  "twitter": {
+    "enabled": false,
+    "consumer_key": "",
+    "consumer_secret": "",
+    "access_token": "",
+    "access_token_secret": "",
+    "target_handles": []
+  },
+  "bluesky": {
+    "enabled": false,
+    "handle": "",
+    "app_password": "",
+    "target_handles": []
+  },
+  "discord": {
+    "enabled": false,
+    "webhook_url": ""
+  }
+}
