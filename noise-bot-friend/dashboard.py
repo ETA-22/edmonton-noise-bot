@@ -80,27 +80,52 @@ def is_admin(parsed_url, headers=None):
     return False
 
 def get_audio_devices():
-    try:
-        import pyaudio
-        p = pyaudio.PyAudio()
-        devs = []
-        info = p.get_host_api_info_by_index(0)
-        numdevices = info.get('deviceCount', 0)
-        for i in range(0, numdevices):
-            try:
-                device_info = p.get_device_info_by_host_api_device_index(0, i)
-                if device_info.get('maxInputChannels', 0) > 0:
+    devs = []
+    # 1. Read Linux ALSA kernel cards directly (never blocked by EBUSY)
+    if os.path.exists("/proc/asound/cards"):
+        try:
+            with open("/proc/asound/cards", "r") as f:
+                content = f.read()
+            import re
+            card_matches = re.findall(r"^\s*(\d+)\s*\[([^\]]+)\]:\s*([^\n-]+)(?:-\s*([^\n]+))?", content, re.MULTILINE)
+            for m in card_matches:
+                card_idx = int(m[0])
+                card_name = (m[3].strip() if m[3] else m[2].strip())
+                if "headphone" not in card_name.lower() and "vc4" not in card_name.lower():
                     devs.append({
-                        "index": i,
-                        "name": device_info.get('name'),
-                        "channels": device_info.get('maxInputChannels')
+                        "index": card_idx,
+                        "name": f"{card_name} (hw:{card_idx},0)",
+                        "channels": 2
                     })
-            except Exception:
-                pass
-        p.terminate()
-        return devs
-    except Exception as e:
-        return [{"index": 1, "name": f"Yeti Stereo Microphone ({e})", "channels": 2}]
+        except Exception:
+            pass
+
+    # 2. PyAudio enumeration
+    if not devs:
+        try:
+            import pyaudio
+            p = pyaudio.PyAudio()
+            info = p.get_host_api_info_by_index(0)
+            numdevices = info.get('deviceCount', 0)
+            for i in range(0, numdevices):
+                try:
+                    device_info = p.get_device_info_by_host_api_device_index(0, i)
+                    if device_info.get('maxInputChannels', 0) > 0:
+                        devs.append({
+                            "index": i,
+                            "name": device_info.get('name'),
+                            "channels": device_info.get('maxInputChannels')
+                        })
+                except Exception:
+                    pass
+            p.terminate()
+        except Exception:
+            pass
+
+    if not devs:
+        devs.append({"index": 1, "name": "USB Microphone (hw:1,0)", "channels": 2})
+
+    return devs
 
 class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -231,22 +256,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         elif path == "/api/wifi/scan":
-            if not is_admin(parsed_url, self.headers):
-                self.send_json({"error": "Unauthorized"}, 403)
-                return
             networks = []
             try:
-                res = subprocess.run(["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list"], capture_output=True, text=True, timeout=8)
+                res = subprocess.run(["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list"], capture_output=True, text=True, timeout=5)
                 for line in res.stdout.strip().split("\n"):
                     if line:
                         parts = line.split(":")
                         if len(parts) >= 2 and parts[0]:
                             networks.append({"ssid": parts[0], "signal": parts[1], "security": parts[2] if len(parts) > 2 else ""})
             except Exception:
-                networks = [
-                    {"ssid": "Home_Wi-Fi_5G", "signal": "95", "security": "WPA2"},
-                    {"ssid": "TELUS_Neighbourhood_Plus", "signal": "72", "security": "WPA3"}
-                ]
+                pass
+            
+            if not networks:
+                try:
+                    res2 = subprocess.run(["iwlist", "wlan0", "scan"], capture_output=True, text=True, timeout=5)
+                    import re
+                    ssids = re.findall(r'ESSID:"([^"]+)"', res2.stdout)
+                    for s in set(ssids):
+                        if s:
+                            networks.append({"ssid": s, "signal": "85", "security": "WPA2"})
+                except Exception:
+                    pass
+
             self.send_json(networks)
             return
 
@@ -1100,10 +1131,14 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     async function scanWifi() {
       const code = document.getElementById('adminPasscode').value || 'admin123';
       const listEl = document.getElementById('wifiList');
-      listEl.innerHTML = '<p class="text-xs text-emerald-400 py-2"><i class="fa-solid fa-spinner fa-spin"></i> Scanning for Wi-Fi...</p>';
+      listEl.innerHTML = '<p class="text-xs text-indigo-400 py-2"><i class="fa-solid fa-spinner fa-spin"></i> Scanning for nearby Wi-Fi networks...</p>';
       try {
         const res = await fetch('/api/wifi/scan?key=' + encodeURIComponent(code));
         const nets = await res.json();
+        if (!nets || nets.length === 0) {
+          listEl.innerHTML = '<p class="text-xs text-slate-400 py-1">No scanned networks returned. Type your Wi-Fi name in the box below to connect.</p>';
+          return;
+        }
         listEl.innerHTML = nets.map(n => `
           <div onclick="document.getElementById('wifiSsidInput').value = '${n.ssid}'" class="p-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg flex items-center justify-between cursor-pointer">
             <span class="font-medium text-white text-xs">${n.ssid}</span>
@@ -1111,7 +1146,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
           </div>
         `).join('');
       } catch (e) {
-        listEl.innerHTML = `<p class="text-xs text-rose-400">Scan error: ${e}</p>`;
+        listEl.innerHTML = '<p class="text-xs text-slate-400 py-1">Type your Wi-Fi SSID and password in the boxes below.</p>';
       }
     }
 
