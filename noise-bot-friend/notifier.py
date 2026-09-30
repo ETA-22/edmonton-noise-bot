@@ -5,10 +5,111 @@ import smtplib
 import time
 import random
 import math
+import re
+import urllib.request
+from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+
+KNOWN_BSKY_DIDS = {
+    "edmontfark.bsky.social": "did:plc:i6hjevujewhjy5dr3prmga66",
+    "edmontonpolice.bsky.social": "did:plc:wsuae553btrbjvzeqved72mo",
+    "ashleysalvador.bsky.social": "did:plc:6atpdv43riexahpsov3setyr",
+    "andrewknack.bsky.social": "did:plc:2zafuyqwoqr3obesmgvrop7m"
+}
+BSKY_DID_CACHE = dict(KNOWN_BSKY_DIDS)
+
+def resolve_bsky_handle(handle):
+    handle = handle.lstrip("@").strip()
+    if not handle:
+        return None
+    if handle in BSKY_DID_CACHE:
+        return BSKY_DID_CACHE[handle]
+    try:
+        req = urllib.request.Request(
+            f"https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle={handle}",
+            headers={"User-Agent": "NoiseBot/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            did = data.get("did")
+            if did:
+                BSKY_DID_CACHE[handle] = did
+                return did
+    except Exception as e:
+        logging.warning(f"[Bluesky] Failed to resolve handle {handle}: {e}")
+    return None
+
+def extract_bsky_facets(text):
+    facets = []
+    
+    # 1. Links (URLs)
+    url_pattern = re.compile(r'https?://[^\s<>"]+')
+    for m in url_pattern.finditer(text):
+        raw_url = m.group(0)
+        clean_url = raw_url.rstrip(".,;!?:)]}'\"")
+        trim_len = len(raw_url) - len(clean_url)
+        
+        start_char = m.start()
+        end_char = m.end() - trim_len
+        
+        b_start = len(text[:start_char].encode("utf-8"))
+        b_end = len(text[:end_char].encode("utf-8"))
+        
+        facets.append({
+            "index": {"byteStart": b_start, "byteEnd": b_end},
+            "features": [{
+                "$type": "app.bsky.richtext.facet#link",
+                "uri": clean_url
+            }]
+        })
+
+    # 2. Mentions (@handles)
+    handle_pattern = re.compile(r'@([a-zA-Z0-9_.-]+[a-zA-Z0-9])')
+    for m in handle_pattern.finditer(text):
+        tag = m.group(1)
+        start_char = m.start()
+        end_char = m.end()
+        
+        b_start = len(text[:start_char].encode("utf-8"))
+        b_end = len(text[:end_char].encode("utf-8"))
+        
+        did = resolve_bsky_handle(tag)
+        if did:
+            facets.append({
+                "index": {"byteStart": b_start, "byteEnd": b_end},
+                "features": [{
+                    "$type": "app.bsky.richtext.facet#mention",
+                    "did": did
+                }]
+            })
+            
+    facets.sort(key=lambda x: x["index"]["byteStart"])
+    return facets
+
+# Force Mountain Time (America/Edmonton)
+if hasattr(time, "tzset"):
+    try:
+        os.environ["TZ"] = "America/Edmonton"
+        time.tzset()
+    except Exception:
+        pass
+
+def get_local_time_str(fmt="%I:%M %p"):
+    try:
+        import zoneinfo
+        tz = zoneinfo.ZoneInfo("America/Edmonton")
+        return datetime.now(tz).strftime(fmt).lstrip("0")
+    except Exception:
+        pass
+    try:
+        # Fallback to Mountain Time UTC-6
+        tz_mdt = timezone(timedelta(hours=-6))
+        return datetime.now(tz_mdt).strftime(fmt).lstrip("0")
+    except Exception:
+        return time.strftime(fmt).lstrip("0")
 
 # Set up logging
 logging.basicConfig(
@@ -27,14 +128,23 @@ class Notifier:
 
     def load_config(self):
         try:
-            if os.path.exists(self.config_path):
-                with open(self.config_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            elif os.path.exists("config.example.json"):
-                with open("config.example.json", "r", encoding="utf-8") as f:
-                    return json.load(f)
+            if isinstance(self.config_path, dict):
+                if os.path.exists("config.json"):
+                    with open("config.json", "r", encoding="utf-8") as f:
+                        return json.load(f)
+                return self.config_path
+            if isinstance(self.config_path, str):
+                if os.path.exists(self.config_path):
+                    with open(self.config_path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                elif os.path.exists("config.json"):
+                    with open("config.json", "r", encoding="utf-8") as f:
+                        return json.load(f)
+                elif os.path.exists("config.example.json"):
+                    with open("config.example.json", "r", encoding="utf-8") as f:
+                        return json.load(f)
         except Exception as e:
-            logging.error(f"Failed to load config file {self.config_path}: {e}")
+            logging.error(f"Failed to load config: {e}")
         return {}
 
     def reload(self):
@@ -51,8 +161,10 @@ class Notifier:
         attenuation = 20.0 * math.log10(distance / 0.5)
         return dba_level + attenuation
 
-    def notify(self, dba_level, audio_file_path=None):
+    def notify(self, dba_level, audio_file_path=None, wav_path=None, duration_seconds=None, **kwargs):
         self.reload()
+        if audio_file_path is None and wav_path is not None:
+            audio_file_path = wav_path
         muffler_db = self.get_estimated_tailpipe_db(dba_level)
         message = f"Noise threshold exceeded! Sensor: {dba_level:.1f} dBA | Est. Tailpipe: {muffler_db:.1f} dBA."
         logging.info(message)
@@ -157,7 +269,7 @@ class Notifier:
             logging.error("Twitter keys are missing in config.")
             return
 
-        current_time = time.strftime("%I:%M %p")
+        current_time = get_local_time_str("%I:%M %p")
         muffler_db = self.get_estimated_tailpipe_db(dba_level)
         street = self.config.get("street_name", "the street")
         loc = self.config.get("location_name", "balcony")
@@ -203,17 +315,11 @@ class Notifier:
         app_password = bluesky_config.get("app_password")
         target_handles = bluesky_config.get("target_handles", [])
 
-        try:
-            from atproto import Client
-        except ImportError:
-            logging.error("atproto is not installed. Run 'pip install atproto' to use Bluesky.")
-            return
-
         if not handle or not app_password:
             logging.error("Bluesky credentials are not configured in config.json.")
             return
 
-        current_time = time.strftime("%I:%M %p")
+        current_time = get_local_time_str("%I:%M %p")
         muffler_db = self.get_estimated_tailpipe_db(dba_level)
         street = self.config.get("street_name", "the street")
         loc = self.config.get("location_name", "balcony")
@@ -226,17 +332,44 @@ class Notifier:
         post_text = random.choice(templates)
 
         if audio_url:
-            post_text += f"\nListen: {audio_url}"
+            post_text += f"\n\nListen: {audio_url}"
 
         if target_handles:
             handles_str = " ".join(target_handles)
-            post_text += f"\nCc: {handles_str}"
+            post_text += f"\n\nCc: {handles_str}"
 
         try:
-            client = Client()
-            client.login(handle, app_password)
-            client.send_post(text=post_text)
-            logging.info("Bluesky post successfully sent!")
+            # 1. Create session
+            auth_req = urllib.request.Request(
+                'https://bsky.social/xrpc/com.atproto.server.createSession',
+                data=json.dumps({'identifier': handle, 'password': app_password}).encode('utf-8'),
+                headers={'Content-Type': 'application/json'}
+            )
+            with urllib.request.urlopen(auth_req, timeout=10) as resp:
+                auth_data = json.loads(resp.read().decode('utf-8'))
+                did = auth_data['did']
+                jwt = auth_data['accessJwt']
+
+            # 2. Extract RichText facets for clickable links & account mentions
+            facets = extract_bsky_facets(post_text)
+
+            record = {
+                '$type': 'app.bsky.feed.post',
+                'text': post_text,
+                'createdAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+            }
+            if facets:
+                record['facets'] = facets
+
+            # 3. Post to AT Protocol repo
+            post_req = urllib.request.Request(
+                'https://bsky.social/xrpc/com.atproto.repo.createRecord',
+                data=json.dumps({'repo': did, 'collection': 'app.bsky.feed.post', 'record': record}).encode('utf-8'),
+                headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {jwt}'}
+            )
+            with urllib.request.urlopen(post_req, timeout=10) as resp:
+                res = json.loads(resp.read().decode('utf-8'))
+                logging.info(f"Bluesky post successfully sent! URI: {res.get('uri')}")
         except Exception as e:
             logging.error(f"Failed to send Bluesky post: {e}")
 

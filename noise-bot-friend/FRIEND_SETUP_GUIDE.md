@@ -1,83 +1,74 @@
-# 🔊 Traffic Noise Monitor - Quick Setup Guide
+# 🔊 Edmonton Traffic Noise Monitor — Quick Setup Guide
 
-Welcome to the Traffic Noise Monitor! This guide walks you through getting your monitoring station running on your Raspberry Pi in under 5 minutes.
+Welcome to the Edmonton Traffic Noise Monitor! This guide walks you through getting your monitoring station running on your Raspberry Pi in under 3 minutes.
 
 ---
 
 ## 📦 What You Need
 1. **Raspberry Pi** (Pi 3, Pi 4, Pi 5, or Pi Zero 2W) running Raspberry Pi OS.
 2. **USB Microphone** (or USB sound card with 3.5mm mic).
-3. **Ethernet Cable** (just for the initial 2-minute Wi-Fi setup).
+3. **Power Adapter** (USB power supply for your Pi).
+*(Note: An Ethernet cable is **100% optional** — the bot has a built-in IoT Wi-Fi Hotspot for easy phone setup!)*
 
 ---
 
-## 🚀 Step 1: Initial Setup & 1-Step Install
+## 🚀 Setup Option A: The IoT Hotspot Setup (Zero Cables / Phone Setup) — ⭐ RECOMMENDED
+
+Just like setting up a smart plug, Sonos, or Chromecast:
 
 1. **Plug in Hardware:**
    * Plug your **USB Microphone** into any USB port on the Pi.
-   * Connect an **Ethernet cable** from your Wi-Fi router to the Pi.
-   * Plug in the power supply.
+   * Plug in the power supply. *(Leave Ethernet unplugged!)*
 
-2. **Copy the Bot to your Pi:**
-   * Put `noise-bot-friend.zip` onto your Pi (via flash drive, scp, or download).
-   * Unzip it and enter the folder:
-     ```bash
-     unzip noise-bot-friend.zip -d noise-bot-friend
-     cd noise-bot-friend
-     ```
+2. **Connect to Hotspot on Your Phone:**
+   * Wait ~60 seconds for the Pi to boot.
+   * On your phone or laptop, open Wi-Fi settings and connect to:
+     📶 **`Edmonton-Noise-Bot-Setup`** (No password needed).
 
-3. **Run the Automated Installer:**
-   ```bash
-   chmod +x install.sh
-   ./install.sh
-   ```
-   *(This automatically installs Docker, configures audio permissions, launches the bot, and starts **Watchtower** for automatic background updates).*
+3. **Complete the 60-Second Setup Wizard:**
+   * A setup window will **automatically pop up** on your phone screen (Captive Portal).
+   * Tap your home Wi-Fi network from the list and enter your Wi-Fi password.
+   * Adjust your **Floor Level** slider (e.g. Floor 3) and Station Name.
+   * *(Optional)* Set a custom admin passcode and Bluesky credentials.
+   * Tap **"Connect & Start Monitoring"**.
 
----
-
-## 🌐 Step 2: Open the Web Dashboard
-
-From any phone, laptop, or tablet on your home Wi-Fi, open your browser to:
-```text
-http://<your-pi-ip>:5000
-```
-*(The exact IP address is printed in green at the end of the installer).*
+4. **Done!**
+   * The Pi will connect to your home Wi-Fi, shut down the setup hotspot, and start 24/7 noise monitoring!
+   * Access your dashboard anytime on your home network at:
+     👉 **`http://noise-bot.local:5000`**
 
 ---
 
-## ⚙️ Step 3: Configure in Your Browser (Phone or PC)
+## 🔌 Setup Option B: Ethernet Cable Setup (Direct Network)
 
-Tap the **Settings** button in the bottom navigation (Default passcode: `admin123`):
+If you prefer plugging directly into your home router:
 
-### 1. 🎤 Audio & Elevation Calibration
-* **Floor Level Slider:** Select which floor you are on (e.g. Ground Floor, Floor 3, Floor 10).
-* **Setback Slider:** Set how far your building is from the road (e.g. 5 meters).
-  * *The app automatically triangulates the line-of-sight sound ray and calculates the exact acoustic loss to the vehicle tailpipe on the road below.*
-* **Microphone:** Select your USB microphone from the dropdown.
-
-### 2. 📶 Wi-Fi Network Setup (To Unplug Ethernet)
-* Go to the **📶 Wi-Fi** tab and tap **Scan Networks**.
-* Select your home Wi-Fi network, type your password, and click **Join Wi-Fi**.
-* Once connected, you can **unplug the Ethernet cable** and move the Pi anywhere you like!
-
-### 3. 📣 Bluesky Auto-Posting (Optional)
-* Go to the **📣 Alerts** tab and toggle **Enable Bluesky**.
-* **Generate an App Password:**
-  1. On your Bluesky app/web, go to `Settings` $\rightarrow$ `Privacy and Security` $\rightarrow$ `App Passwords` $\rightarrow$ `Add App Password`.
-  2. Name it *"Noise Bot"* and copy the password.
-* Paste your Bluesky Handle (e.g. `yourname.bsky.social`) and the App Password.
-* *(Optional)* Add target handles to tag (e.g. `@cityofedmonton.bsky.social`).
-* Tap **Save & Apply**.
+1. Connect an Ethernet cable from your router to the Pi and plug in power.
+2. Open your browser from any phone or PC on your network to:
+   👉 **`http://noise-bot.local:5000`** (or your Pi's IP address).
+3. Tap **Settings** (default passcode: `1811`):
+   * Go to **📶 Wi-Fi**, click **Scan Networks**, select your home Wi-Fi, and join.
+   * Once joined, you can unplug the Ethernet cable!
 
 ---
 
-## 📊 Step 4: Monitoring, Stats & Re-Classifying
+## 🛠️ Step 2: Audio & Microphone Calibration
 
-* **Live Tab:** View the real-time decibel meter and estimated tailpipe noise level.
-* **Stats Tab:** View the **Daily Events Chart** (events per day over the past 14 days) and your total violation count.
-* **Sound Clips & Re-Classification:** Listen to any 8-second recorded audio clip and change its tag on the fly using the dropdown (🚗 Traffic, 🚨 Siren, 🏗️ Construction, 🌧️ Weather, ❓ Misc).
+In your web dashboard (`http://noise-bot.local:5000`):
+1. Tap **Settings** (default passcode: `1811` or your custom passcode).
+2. Verify your **USB Microphone** is selected in the dropdown.
+3. Make sound near the microphone to watch the live decibel meter respond.
+4. Set your **Setback Distance** (distance from your balcony/window to the road below).
+   * *The acoustic engine automatically calculates line-of-sight sound attenuation from the road.*
 
 ---
 
-## 🔄 Zero-Maintenance Auto Updates
-Whenever new features or bug fixes are published, **Watchtower** automatically downloads the update and restarts the bot without touching your saved Wi-Fi, credentials, or audio recordings.
+## 📊 Daily Monitoring & Sound Clips
+* **Live Tab:** View real-time dBA decibel levels and estimated tailpipe noise.
+* **Stats Tab:** View violation charts and historical decibel trends.
+* **Recordings:** Listen to recorded 8-second audio clips of loud vehicle spikes and tag them (🚗 Traffic, 🚨 Siren, 🏗️ Construction, 🌧️ Weather, ❓ Misc).
+
+---
+
+## 🔄 Zero-Maintenance Auto-Updates
+Whenever updates or improvements are released, **Watchtower** automatically pulls the latest build and restarts the bot in the background without affecting your saved Wi-Fi or settings.

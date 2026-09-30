@@ -9,6 +9,15 @@ import threading
 import urllib.request
 import re
 from collections import deque
+from datetime import datetime, timezone, timedelta
+
+# Force Mountain Time (America/Edmonton)
+if hasattr(time, "tzset"):
+    try:
+        os.environ["TZ"] = "America/Edmonton"
+        time.tzset()
+    except Exception:
+        pass
 
 import numpy as np
 import pyaudio
@@ -108,6 +117,139 @@ def get_audio_devices():
 
     return devs
 
+def get_hardware_station_id(cfg=None):
+    if cfg:
+        f_id = (cfg.get("fleet_hub", {}).get("station_id") or "").strip()
+        if f_id:
+            return f_id if f_id.startswith("noise-bot-") else f"noise-bot-{f_id}"
+        loc_name = (cfg.get("location_name") or "").strip()
+        if loc_name and loc_name.lower() not in ["station", "balcony", "home", "balcony station", "community station", "noise-bot-subla"]:
+            clean = re.sub(r'[^a-z0-9\-]', '', loc_name.lower().replace(" ", "-")).strip('-')
+            if clean:
+                return f"noise-bot-{clean}"
+    try:
+        with open("/proc/cpuinfo", "r") as f:
+            for line in f:
+                if line.startswith("Serial"):
+                    ser = line.split(":")[1].strip()
+                    if ser and ser != "0000000000000000":
+                        return f"noise-bot-{ser[-6:].lower()}"
+    except Exception:
+        pass
+    try:
+        import uuid
+        mac = uuid.getnode()
+        mac_hex = f"{mac:012x}"
+        return f"noise-bot-{mac_hex[-6:]}"
+    except Exception:
+        pass
+    return "noise-bot-station"
+
+def upload_recording_to_hub(wav_path, event_meta):
+    if not wav_path or not os.path.exists(wav_path):
+        return
+    try:
+        import base64
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        fleet_cfg = cfg.get("fleet_hub", {})
+        if not fleet_cfg.get("enabled", True):
+            return
+        hub_url = fleet_cfg.get("hub_url", "").rstrip("/")
+        if not hub_url or not hub_url.startswith("http"):
+            return
+
+        with open(wav_path, "rb") as wf:
+            wav_bytes = wf.read()
+        
+        audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+        filename = os.path.basename(wav_path)
+        station_id = get_hardware_station_id(cfg)
+        
+        payload = {
+            "station_id": station_id,
+            "filename": filename,
+            "dba": float(event_meta.get("dba", 70.0)),
+            "tailpipe_dba": float(event_meta.get("tailpipe_dba", 95.0)),
+            "tag": event_meta.get("tag", "traffic"),
+            "audio_b64": audio_b64,
+            "timestamp": time.time()
+        }
+        
+        endpoint = f"{hub_url}/api/recordings/upload"
+        req_data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "EdmontonNoiseBot/1.4 (RaspberryPi; Linux aarch64)"
+        }
+        req = urllib.request.Request(endpoint, data=req_data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status in [200, 201]:
+                logging.info(f"Uploaded audio {filename} to Central Hub ({len(wav_bytes)} bytes)")
+                return True
+        return False
+    except Exception as e:
+        logging.error(f"Failed to upload audio to Central Hub: {e}")
+        return False
+
+def sync_unuploaded_recordings():
+    if not os.path.exists(OUTPUT_DIR):
+        return
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        fleet_cfg = cfg.get("fleet_hub", {})
+        if not fleet_cfg.get("enabled", True):
+            return
+        hub_url = fleet_cfg.get("hub_url", "").rstrip("/")
+        if not hub_url or not hub_url.startswith("http"):
+            return
+
+        sync_state_file = os.path.join(BASE_DIR, ".uploaded_recordings.json")
+        uploaded = set()
+        if os.path.exists(sync_state_file):
+            try:
+                with open(sync_state_file, "r") as f:
+                    uploaded = set(json.load(f))
+            except Exception:
+                pass
+
+        wav_files = sorted([f for f in os.listdir(OUTPUT_DIR) if f.endswith(".wav") and not f.endswith("_temp.wav")])
+        unuploaded = [f for f in wav_files if f not in uploaded]
+        if not unuploaded:
+            return
+
+        new_uploaded = False
+        # Take batch of newest first, plus some older if backlog exists
+        batch = unuploaded[-10:]
+        if len(unuploaded) > 10:
+            batch = unuploaded[:5] + batch
+
+        for f in batch:
+            full_path = os.path.join(OUTPUT_DIR, f)
+            match = re.search(r"noise_event_\d+_\d+_(\d+)dba_?([a-zA-Z0-9_-]*)\.wav", f)
+            dba_val = float(match.group(1)) if match else 75.0
+            tag_val = match.group(2) if match and match.group(2) else "traffic"
+            dist = cfg.get("distance_to_road_meters") or 10.0
+            loss = 20 * np.log10(max(0.5, dist) / 0.5)
+            tailpipe = round(dba_val + loss, 1)
+
+            ok = upload_recording_to_hub(full_path, {"dba": dba_val, "tailpipe_dba": tailpipe, "tag": tag_val})
+            if ok:
+                uploaded.add(f)
+                new_uploaded = True
+            time.sleep(0.3)
+
+        if new_uploaded:
+            try:
+                with open(sync_state_file, "w") as f:
+                    # Persist up to 25,000 uploaded filenames
+                    json.dump(list(uploaded)[-25000:], f)
+            except Exception:
+                pass
+    except Exception as e:
+        logging.error(f"Error in recording sync loop: {e}")
+
 def send_fleet_heartbeat(event_payload=None):
     if not os.path.exists(CONFIG_FILE):
         return
@@ -130,17 +272,19 @@ def send_fleet_heartbeat(event_payload=None):
         if os.path.exists(OUTPUT_DIR):
             total_events = len([f for f in os.listdir(OUTPUT_DIR) if f.endswith(".wav")])
 
-        station_id = fleet_cfg.get("station_id") or cfg.get("location_name", "station").lower().replace(" ", "-")
+        station_id = get_hardware_station_id(cfg)
+
         payload = {
             "station_id": station_id,
             "station_name": fleet_cfg.get("station_name") or cfg.get("location_name", "Station"),
             "street_name": cfg.get("street_name", "Edmonton Corridor"),
             "location_name": cfg.get("location_name", "Balcony"),
             "floor_number": cfg.get("floor_number", 1),
+            "horizontal_setback_meters": cfg.get("horizontal_setback_meters", 5.0),
             "distance_to_road_meters": cfg.get("distance_to_road_meters", 10.0),
             "current_dba": live_dba,
             "total_violations": total_events,
-            "version": "v1.2.0"
+            "version": "v1.4"
         }
 
         if event_payload:
@@ -148,17 +292,40 @@ def send_fleet_heartbeat(event_payload=None):
 
         endpoint = f"{hub_url}/api/heartbeat"
         req_data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(endpoint, data=req_data, headers={"Content-Type": "application/json"}, method="POST")
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "EdmontonNoiseBot/1.4 (RaspberryPi; Linux aarch64)"
+        }
+        req = urllib.request.Request(endpoint, data=req_data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=5) as resp:
-            pass
+            if resp.status == 200:
+                try:
+                    resp_data = json.loads(resp.read().decode("utf-8"))
+                    cfg_up = resp_data.get("config_update")
+                    if cfg_up and isinstance(cfg_up, dict):
+                        cur_cfg = load_config()
+                        cur_cfg.update(cfg_up)
+                        save_config(cur_cfg)
+                        try:
+                            with open(os.path.join(BASE_DIR, ".reload_trigger"), "w") as rf:
+                                rf.write(str(time.time()))
+                        except Exception:
+                            pass
+                        print(f"[Detector] Over-the-air config updated from Fleet Hub: floor={cur_cfg.get('floor_number')}, setback={cur_cfg.get('horizontal_setback_meters')}")
+                except Exception:
+                    pass
     except Exception:
         pass
 
 def start_fleet_sync_thread():
     def sync_loop():
+        sync_count = 0
         while True:
-            time.sleep(15)
+            time.sleep(3)
             send_fleet_heartbeat()
+            sync_count += 1
+            if sync_count % 20 == 0:
+                sync_unuploaded_recordings()
 
     t = threading.Thread(target=sync_loop, daemon=True)
     t.start()
@@ -187,15 +354,15 @@ def main():
         except Exception as e:
             logging.error(f"Failed to read {CONFIG_FILE}: {e}")
 
-    threshold_dba = args.threshold or config.get("threshold_dba", 70.0)
-    calibration_offset = args.offset or config.get("calibration_offset", 95.0)
-    cooldown_period = config.get("cooldown_period_minutes", 2) * 60
-    record_seconds = config.get("record_event_seconds", 8)
-    save_audio = config.get("save_audio_files", True)
-    output_dir = config.get("output_directory", OUTPUT_DIR)
+    threshold_dba = args.threshold or config.get("threshold_dba") or 70.0
+    calibration_offset = args.offset or config.get("calibration_offset") or 95.0
+    cooldown_period = (config.get("cooldown_period_minutes") or 2) * 60
+    record_seconds = config.get("record_event_seconds") or 8
+    save_audio = config.get("save_audio_files") if config.get("save_audio_files") is not None else True
+    output_dir = config.get("output_directory") or OUTPUT_DIR
     device_index = args.device if args.device is not None else config.get("audio_device_index", None)
 
-    notifier = Notifier(config)
+    notifier = Notifier(CONFIG_FILE)
 
     b, a = get_a_weighting_coefficients(RATE)
     filter_state = signal.lfilter_zi(b, a) * 0 if (HAS_SCIPY and b is not None) else None
@@ -203,23 +370,59 @@ def main():
     p = pyaudio.PyAudio()
 
     stream = None
-    target_device = device_index
-    if target_device is None:
-        devices = get_audio_devices()
-        for dev in devices:
-            if "yeti" in dev["name"].lower() or "usb" in dev["name"].lower() or "mic" in dev["name"].lower() or "streaming" in dev["name"].lower():
-                target_device = dev["index"]
-                logging.info(f"Auto-selected microphone: [{dev['index']}] {dev['name']}")
-                break
-
-    # Determine native channel count (Stereo vs Mono)
+    target_device = None
     channels = 1
-    try:
-        if target_device is not None:
-            dev_info = p.get_device_info_by_host_api_device_index(0, target_device)
-            channels = min(2, max(1, int(dev_info.get("maxInputChannels", 1))))
-    except Exception:
-        channels = 1
+    p_dev_count = p.get_device_count()
+
+    # Priority 1: Specifically search PyAudio input devices for Yeti
+    for i in range(p_dev_count):
+        try:
+            info = p.get_device_info_by_index(i)
+            dev_name = (info.get("name") or "").lower()
+            ch = int(info.get("maxInputChannels", 0))
+            if ch > 0 and "yeti" in dev_name:
+                target_device = i
+                channels = min(2, max(1, ch))
+                logging.info(f"Selected Yeti microphone: [{i}] {info.get('name')} ({channels} channels)")
+                break
+        except Exception:
+            pass
+
+    # Priority 2: If no Yeti, check explicit device_index from config
+    if target_device is None and device_index is not None and str(device_index).lower() not in ["null", "none", "yeti"]:
+        try:
+            info = p.get_device_info_by_index(int(device_index))
+            if info.get("maxInputChannels", 0) > 0:
+                target_device = int(device_index)
+                channels = min(2, max(1, int(info.get("maxInputChannels", 1))))
+        except Exception:
+            pass
+        if target_device is None:
+            hw_str = f"hw:{device_index},"
+            for i in range(p_dev_count):
+                try:
+                    info = p.get_device_info_by_index(i)
+                    if hw_str in (info.get("name") or "") and info.get("maxInputChannels", 0) > 0:
+                        target_device = i
+                        channels = min(2, max(1, int(info.get("maxInputChannels", 1))))
+                        break
+                except Exception:
+                    pass
+
+    # Priority 3: Fallback to any USB / mic device
+    if target_device is None:
+        for i in range(p_dev_count):
+            try:
+                info = p.get_device_info_by_index(i)
+                dev_name = (info.get("name") or "").lower()
+                ch = int(info.get("maxInputChannels", 0))
+                if ch > 0 and any(k in dev_name for k in ["usb", "mic", "streaming"]):
+                    target_device = i
+                    channels = min(2, max(1, ch))
+                    logging.info(f"Auto-selected microphone: [{i}] {info.get('name')} ({channels} channels)")
+                    break
+            except Exception:
+                pass
 
     try:
         stream = p.open(
@@ -339,7 +542,7 @@ def main():
                     tag = "traffic"
 
                     if save_audio:
-                        timestamp = time.strftime("%Y%m%d_%H%M%S")
+                        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                         temp_filename = f"noise_event_{timestamp}_{int(event_peak_dba)}dba_temp.wav"
                         temp_path = os.path.join(output_dir, temp_filename)
 
@@ -363,16 +566,32 @@ def main():
 
                     duration = post_trigger_seconds + pre_trigger_seconds
                     logging.info(f"Processing event: Peak {event_peak_dba:.1f} dBA, Duration {duration}s")
-                    notifier.notify(event_peak_dba, wav_path=wav_path, duration_seconds=duration)
+                    
+                    # Run network notification in background thread so audio capture never blocks
+                    threading.Thread(
+                        target=notifier.notify,
+                        args=(event_peak_dba,),
+                        kwargs={"audio_file_path": wav_path, "wav_path": wav_path, "duration_seconds": duration},
+                        daemon=True
+                    ).start()
 
-                    dist = config.get("distance_to_road_meters", 10.0)
+                    dist = config.get("distance_to_road_meters") or 10.0
                     loss = 20 * np.log10(max(0.5, dist) / 0.5)
                     tailpipe = round(event_peak_dba + loss, 1)
-                    send_fleet_heartbeat(event_payload={
-                        "dba": round(event_peak_dba, 1),
-                        "tailpipe_dba": tailpipe,
-                        "tag": tag
-                    })
+                    fn = final_filename if final_filename else f"noise_event_{timestamp}_{int(event_peak_dba)}dba_{tag}.wav"
+                    
+                    threading.Thread(
+                        target=send_fleet_heartbeat,
+                        kwargs={"event_payload": {"dba": round(event_peak_dba, 1), "tailpipe_dba": tailpipe, "tag": tag, "filename": fn}},
+                        daemon=True
+                    ).start()
+
+                    if wav_path and os.path.exists(wav_path):
+                        threading.Thread(
+                            target=upload_recording_to_hub,
+                            args=(wav_path, {"dba": round(event_peak_dba, 1), "tailpipe_dba": tailpipe, "tag": tag}),
+                            daemon=True
+                        ).start()
 
     except KeyboardInterrupt:
         logging.info("Stopping noise detector...")

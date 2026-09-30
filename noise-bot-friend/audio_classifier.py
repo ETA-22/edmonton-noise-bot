@@ -7,7 +7,9 @@ def classify_audio(wav_path):
     """
     Analyzes audio WAV file and classifies it as:
     - 'vehicle': Confirmed vehicle exhaust / engine rumble
+    - 'ets': Transit bus (heavy diesel engine roar, pneumatic air brakes, sustained pass-by)
     - 'weather': Rain / wind broadband noise
+    - 'bbq': BBQ / patio noise (lid drop, scraping, sizzling, tongs)
     - 'impulse': Thunder, clap, or sudden spike
     - 'review': Borderline / needs manual review
     """
@@ -53,14 +55,20 @@ def classify_audio(wav_path):
         low_band = (freqs >= 50) & (freqs <= 400)      # Vehicle exhaust rumble
         mid_band = (freqs > 400) & (freqs <= 1800)     # Engine / tyre roar
         high_band = (freqs >= 2500) & (freqs <= 12000) # Rain hiss / Wind
+        air_brake_band = (freqs >= 3000) & (freqs <= 7000) # Pneumatic air brake discharge
 
         low_ratio = np.sum(psd[low_band]) / total_energy
         mid_ratio = np.sum(psd[mid_band]) / total_energy
         high_ratio = np.sum(psd[high_band]) / total_energy
+        air_ratio = np.sum(psd[air_brake_band]) / total_energy
 
         # Rain/Wind: Heavy high frequency content (>50%) & weak low frequency rumble (<18%)
         if high_ratio > 0.50 and low_ratio < 0.18:
             return "weather"
+
+        # BBQ / Patio: Close-proximity metallic impact/lid drop/tongs or sizzle (high crest factor, negligible road bass < 12%)
+        if (crest_factor > 5.5 and low_ratio < 0.12 and high_ratio > 0.35) or (high_ratio > 0.65 and low_ratio < 0.08):
+            return "bbq"
 
         # Short Impulse / Claps: High crest factor and short duration peak
         if crest_factor > 5.0 and low_ratio < 0.25:
@@ -68,6 +76,12 @@ def classify_audio(wav_path):
 
         # Vehicle Exhaust / Engine: Low/Mid frequency dominance (>35% energy below 1.8kHz)
         if (low_ratio + mid_ratio) > 0.35 and high_ratio < 0.55:
+            # Transit Bus (ETS): Check for sustained diesel rumble envelope or pneumatic air brake discharge
+            sustained_ratio = np.sum(rms_envelope > (peak_rms * 0.35)) / num_frames
+            is_air_brake = (air_ratio > 0.10 and low_ratio > 0.35)
+            is_sustained_bus = (sustained_ratio > 0.32 and crest_factor < 3.2 and low_ratio > 0.50)
+            if is_air_brake or is_sustained_bus:
+                return "ets"
             return "vehicle"
 
         return "review"

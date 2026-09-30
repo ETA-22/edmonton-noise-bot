@@ -1,0 +1,15 @@
+[Unit]
+Description=Edmonton Noise Bot IoT Wi-Fi Hotspot Auto-Provisioner
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+User=root
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory={{APP_DIR}}/provisioner
+ExecStart=/usr/bin/python3 -u {{APP_DIR}}/provisioner/wifi_provisioner.py
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

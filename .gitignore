@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+recordings/
+*.wav
+*.log
+live_audio_state.json
+fleet_database.json
+.DS_Store
+Thumbs.db
