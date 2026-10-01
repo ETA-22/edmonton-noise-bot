@@ -393,6 +393,10 @@ def main():
     calibration_offset = args.offset or config.get("calibration_offset") or 95.0
     cooldown_period = (config.get("cooldown_period_minutes") or 2) * 60
     record_seconds = config.get("record_event_seconds") or 8
+    # Events last at least record_seconds; a sound that keeps going extends the recording until
+    # it has been below the threshold for event_tail_seconds, up to max_event_seconds in total
+    max_event_seconds = float(config.get("max_event_seconds") or 30)
+    event_tail_seconds = float(config.get("event_tail_seconds") or 2)
     save_audio = config.get("save_audio_files") if config.get("save_audio_files") is not None else True
     output_dir = config.get("output_directory") or OUTPUT_DIR
     device_index = args.device if args.device is not None else config.get("audio_device_index", None)
@@ -517,6 +521,8 @@ def main():
     post_trigger_seconds = record_seconds - pre_trigger_seconds
     pre_trigger_chunks = int((RATE / CHUNK) * pre_trigger_seconds)
     post_trigger_chunks = int((RATE / CHUNK) * post_trigger_seconds)
+    tail_chunks = max(1, int((RATE / CHUNK) * event_tail_seconds))
+    max_event_chunks = int((RATE / CHUNK) * max(max_event_seconds, record_seconds))
 
     audio_history = deque(maxlen=pre_trigger_chunks)
     is_recording_event = False
@@ -524,6 +530,7 @@ def main():
     event_peak_dba = 0.0
     event_start_time = 0.0
     post_trigger_count = 0
+    chunks_since_loud = 0
     last_notification_time = 0.0
     last_state_write_time = 0.0
 
@@ -590,13 +597,18 @@ def main():
                     event_peak_dba = dba
                     event_frames = list(audio_history)
                     post_trigger_count = 0
+                    chunks_since_loud = 0
             else:
                 event_frames.append(data)
                 post_trigger_count += 1
                 if dba > event_peak_dba:
                     event_peak_dba = dba
+                chunks_since_loud = 0 if dba >= threshold_dba else chunks_since_loud + 1
 
-                if post_trigger_count >= post_trigger_chunks:
+                hit_max_length = len(event_frames) >= max_event_chunks
+                if hit_max_length or (post_trigger_count >= post_trigger_chunks and chunks_since_loud >= tail_chunks):
+                    if hit_max_length:
+                        logging.info(f"Event reached the {max_event_seconds:.0f}s maximum length")
                     is_recording_event = False
                     last_notification_time = current_time
                     wav_path = None
@@ -629,7 +641,7 @@ def main():
                             logging.error(f"Failed to save WAV file: {e}")
                             wav_path = None
 
-                    duration = post_trigger_seconds + pre_trigger_seconds
+                    duration = round(len(event_frames) * CHUNK / RATE, 1)
                     logging.info(f"Processing event: Peak {event_peak_dba:.1f} dBA, Duration {duration}s")
                     
                     # Run network notification in background thread so audio capture never blocks
