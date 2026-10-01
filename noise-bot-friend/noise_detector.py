@@ -30,6 +30,7 @@ except ImportError:
 
 from notifier import Notifier
 from audio_classifier import classify_audio
+from calibrated_wav import write_calibrated_wav
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(BASE_DIR, "noise_bot.log")
@@ -367,88 +368,114 @@ def main():
     b, a = get_a_weighting_coefficients(RATE)
     filter_state = signal.lfilter_zi(b, a) * 0 if (HAS_SCIPY and b is not None) else None
 
-    p = pyaudio.PyAudio()
-
-    stream = None
-    target_device = None
-    channels = 1
-    p_dev_count = p.get_device_count()
-
-    # Priority 1: Specifically search PyAudio input devices for Yeti
-    for i in range(p_dev_count):
+    audio_source = config.get("audio_source") or {}
+    # Save events as float WAVs scaled so 0 dBFS (A-weighted RMS) = reference dB(A), using the
+    # same calibration_offset as the meter; "calibrated_wav": false keeps raw 16-bit WAVs.
+    calibrated_wav = audio_source.get("calibrated_wav", True)
+    calibrated_wav_reference_db = float(audio_source.get("calibrated_wav_reference_db", 100.0))
+    if audio_source.get("type") == "rtsp":
+        from rtsp_source import RTSPAudioSource
+        p = None
+        channels = 1
         try:
-            info = p.get_device_info_by_index(i)
-            dev_name = (info.get("name") or "").lower()
-            ch = int(info.get("maxInputChannels", 0))
-            if ch > 0 and "yeti" in dev_name:
-                target_device = i
-                channels = min(2, max(1, ch))
-                logging.info(f"Selected Yeti microphone: [{i}] {info.get('name')} ({channels} channels)")
-                break
-        except Exception:
-            pass
-
-    # Priority 2: If no Yeti, check explicit device_index from config
-    if target_device is None and device_index is not None and str(device_index).lower() not in ["null", "none", "yeti"]:
+            stream = RTSPAudioSource(audio_source.get("url", ""), rate=RATE)
+        except Exception as e:
+            logging.error(f"Critical audio initialization error: {e}")
+            return
+        logging.info(f"Using RTSP audio source {stream.safe_url} ({channels} channel, {RATE} Hz)")
+    elif audio_source.get("type") == "udp":
+        from udp_source import UdpAudioSource
+        p = None
+        channels = 1
         try:
-            info = p.get_device_info_by_index(int(device_index))
-            if info.get("maxInputChannels", 0) > 0:
-                target_device = int(device_index)
-                channels = min(2, max(1, int(info.get("maxInputChannels", 1))))
-        except Exception:
-            pass
-        if target_device is None:
-            hw_str = f"hw:{device_index},"
-            for i in range(p_dev_count):
-                try:
-                    info = p.get_device_info_by_index(i)
-                    if hw_str in (info.get("name") or "") and info.get("maxInputChannels", 0) > 0:
-                        target_device = i
-                        channels = min(2, max(1, int(info.get("maxInputChannels", 1))))
-                        break
-                except Exception:
-                    pass
+            stream = UdpAudioSource(port=int(audio_source.get("port", 5005)))
+        except Exception as e:
+            logging.error(f"Critical audio initialization error: {e}")
+            return
+        logging.info(f"Using ESP32 UDP audio source on port {audio_source.get('port', 5005)} ({channels} channel, {RATE} Hz)")
+    else:
+        p = pyaudio.PyAudio()
 
-    # Priority 3: Fallback to any USB / mic device
-    if target_device is None:
+        stream = None
+        target_device = None
+        channels = 1
+        p_dev_count = p.get_device_count()
+
+        # Priority 1: Specifically search PyAudio input devices for Yeti
         for i in range(p_dev_count):
             try:
                 info = p.get_device_info_by_index(i)
                 dev_name = (info.get("name") or "").lower()
                 ch = int(info.get("maxInputChannels", 0))
-                if ch > 0 and any(k in dev_name for k in ["usb", "mic", "streaming"]):
+                if ch > 0 and "yeti" in dev_name:
                     target_device = i
                     channels = min(2, max(1, ch))
-                    logging.info(f"Auto-selected microphone: [{i}] {info.get('name')} ({channels} channels)")
+                    logging.info(f"Selected Yeti microphone: [{i}] {info.get('name')} ({channels} channels)")
                     break
             except Exception:
                 pass
 
-    try:
-        stream = p.open(
-            format=FORMAT,
-            channels=channels,
-            rate=RATE,
-            input=True,
-            input_device_index=target_device,
-            frames_per_buffer=CHUNK
-        )
-        logging.info(f"Opened audio input stream on Device {target_device} ({channels} channels, {RATE} Hz)")
-    except Exception as e:
-        logging.warning(f"Failed to open audio device {target_device} with {channels} ch: {e}. Retrying default...")
+        # Priority 2: If no Yeti, check explicit device_index from config
+        if target_device is None and device_index is not None and str(device_index).lower() not in ["null", "none", "yeti"]:
+            try:
+                info = p.get_device_info_by_index(int(device_index))
+                if info.get("maxInputChannels", 0) > 0:
+                    target_device = int(device_index)
+                    channels = min(2, max(1, int(info.get("maxInputChannels", 1))))
+            except Exception:
+                pass
+            if target_device is None:
+                hw_str = f"hw:{device_index},"
+                for i in range(p_dev_count):
+                    try:
+                        info = p.get_device_info_by_index(i)
+                        if hw_str in (info.get("name") or "") and info.get("maxInputChannels", 0) > 0:
+                            target_device = i
+                            channels = min(2, max(1, int(info.get("maxInputChannels", 1))))
+                            break
+                    except Exception:
+                        pass
+
+        # Priority 3: Fallback to any USB / mic device
+        if target_device is None:
+            for i in range(p_dev_count):
+                try:
+                    info = p.get_device_info_by_index(i)
+                    dev_name = (info.get("name") or "").lower()
+                    ch = int(info.get("maxInputChannels", 0))
+                    if ch > 0 and any(k in dev_name for k in ["usb", "mic", "streaming"]):
+                        target_device = i
+                        channels = min(2, max(1, ch))
+                        logging.info(f"Auto-selected microphone: [{i}] {info.get('name')} ({channels} channels)")
+                        break
+                except Exception:
+                    pass
+
         try:
-            channels = 1
             stream = p.open(
                 format=FORMAT,
                 channels=channels,
                 rate=RATE,
                 input=True,
+                input_device_index=target_device,
                 frames_per_buffer=CHUNK
             )
-        except Exception as e2:
-            logging.error(f"Critical audio initialization error: {e2}")
-            p.terminate()
-            return
+            logging.info(f"Opened audio input stream on Device {target_device} ({channels} channels, {RATE} Hz)")
+        except Exception as e:
+            logging.warning(f"Failed to open audio device {target_device} with {channels} ch: {e}. Retrying default...")
+            try:
+                channels = 1
+                stream = p.open(
+                    format=FORMAT,
+                    channels=channels,
+                    rate=RATE,
+                    input=True,
+                    frames_per_buffer=CHUNK
+                )
+            except Exception as e2:
+                logging.error(f"Critical audio initialization error: {e2}")
+                p.terminate()
+                return
 
     logging.info(f"Noise detector running. Threshold: {threshold_dba} dBA, Calibration: {calibration_offset} dB")
 
@@ -548,12 +575,16 @@ def main():
 
                         try:
                             os.makedirs(output_dir, exist_ok=True)
-                            wf = wave.open(temp_path, 'wb')
-                            wf.setnchannels(channels)
-                            wf.setsampwidth(p.get_sample_size(FORMAT))
-                            wf.setframerate(RATE)
-                            wf.writeframes(b''.join(event_frames))
-                            wf.close()
+                            if calibrated_wav:
+                                write_calibrated_wav(temp_path, b''.join(event_frames), channels, RATE,
+                                                     calibration_offset, calibrated_wav_reference_db)
+                            else:
+                                wf = wave.open(temp_path, 'wb')
+                                wf.setnchannels(channels)
+                                wf.setsampwidth(pyaudio.get_sample_size(FORMAT))
+                                wf.setframerate(RATE)
+                                wf.writeframes(b''.join(event_frames))
+                                wf.close()
 
                             tag = classify_audio(temp_path)
                             final_filename = f"noise_event_{timestamp}_{int(event_peak_dba)}dba_{tag}.wav"
@@ -599,7 +630,8 @@ def main():
         if stream:
             stream.stop_stream()
             stream.close()
-        p.terminate()
+        if p:
+            p.terminate()
 
 if __name__ == "__main__":
     main()
