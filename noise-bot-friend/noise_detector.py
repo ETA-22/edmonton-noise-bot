@@ -156,9 +156,48 @@ def event_time_from_filename(filename):
     except ValueError:
         return None
 
+# Upload bookkeeping lives next to the recordings (a mounted volume), so container updates don't
+# trigger a full re-upload. Entries are event IDs, so re-tagging (which renames the file) doesn't
+# upload the event again.
+UPLOAD_STATE_FILE = os.path.join(OUTPUT_DIR, ".uploaded_recordings.json")
+LEGACY_UPLOAD_STATE_FILE = os.path.join(BASE_DIR, ".uploaded_recordings.json")
+_upload_lock = threading.Lock()
+_uploads_in_flight = set()
+
+def recording_event_id(filename):
+    m = re.match(r"(noise_event_\d{8}_\d{6})_", os.path.basename(filename))
+    return m.group(1) if m else os.path.basename(filename)
+
+def load_uploaded_event_ids():
+    ids = set()
+    for path in (LEGACY_UPLOAD_STATE_FILE, UPLOAD_STATE_FILE):
+        try:
+            with open(path, "r") as f:
+                ids.update(recording_event_id(name) for name in json.load(f))
+        except Exception:
+            pass
+    return ids
+
+def mark_event_uploaded(filename):
+    with _upload_lock:
+        ids = load_uploaded_event_ids()
+        ids.add(recording_event_id(filename))
+        try:
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            with open(UPLOAD_STATE_FILE, "w") as f:
+                json.dump(sorted(ids)[-25000:], f)  # event IDs sort chronologically
+        except Exception as e:
+            logging.error(f"Failed to save upload state: {e}")
+
 def upload_recording_to_hub(wav_path, event_meta):
     if not wav_path or not os.path.exists(wav_path):
         return
+    event_id = recording_event_id(wav_path)
+    with _upload_lock:
+        # The live upload and the backlog sync can race for the same event; upload it once
+        if event_id in _uploads_in_flight or event_id in load_uploaded_event_ids():
+            return True
+        _uploads_in_flight.add(event_id)
     try:
         import base64
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -197,12 +236,16 @@ def upload_recording_to_hub(wav_path, event_meta):
         req = urllib.request.Request(endpoint, data=req_data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=15) as resp:
             if resp.status in [200, 201]:
+                mark_event_uploaded(filename)
                 logging.info(f"Uploaded audio {filename} to Central Hub ({len(wav_bytes)} bytes)")
                 return True
         return False
     except Exception as e:
         logging.error(f"Failed to upload audio to Central Hub: {e}")
         return False
+    finally:
+        with _upload_lock:
+            _uploads_in_flight.discard(event_id)
 
 def sync_unuploaded_recordings():
     if not os.path.exists(OUTPUT_DIR):
@@ -217,21 +260,12 @@ def sync_unuploaded_recordings():
         if not hub_url or not hub_url.startswith("http"):
             return
 
-        sync_state_file = os.path.join(BASE_DIR, ".uploaded_recordings.json")
-        uploaded = set()
-        if os.path.exists(sync_state_file):
-            try:
-                with open(sync_state_file, "r") as f:
-                    uploaded = set(json.load(f))
-            except Exception:
-                pass
-
+        uploaded = load_uploaded_event_ids()
         wav_files = sorted([f for f in os.listdir(OUTPUT_DIR) if f.endswith(".wav") and not f.endswith("_temp.wav")])
-        unuploaded = [f for f in wav_files if f not in uploaded]
+        unuploaded = [f for f in wav_files if recording_event_id(f) not in uploaded]
         if not unuploaded:
             return
 
-        new_uploaded = False
         # Take batch of newest first, plus some older if backlog exists
         batch = unuploaded[-10:]
         if len(unuploaded) > 10:
@@ -246,19 +280,8 @@ def sync_unuploaded_recordings():
             loss = 20 * np.log10(max(0.5, dist) / 0.5)
             tailpipe = round(dba_val + loss, 1)
 
-            ok = upload_recording_to_hub(full_path, {"dba": dba_val, "tailpipe_dba": tailpipe, "tag": tag_val})
-            if ok:
-                uploaded.add(f)
-                new_uploaded = True
+            upload_recording_to_hub(full_path, {"dba": dba_val, "tailpipe_dba": tailpipe, "tag": tag_val})
             time.sleep(0.3)
-
-        if new_uploaded:
-            try:
-                with open(sync_state_file, "w") as f:
-                    # Persist up to 25,000 uploaded filenames
-                    json.dump(list(uploaded)[-25000:], f)
-            except Exception:
-                pass
     except Exception as e:
         logging.error(f"Error in recording sync loop: {e}")
 
