@@ -178,7 +178,7 @@ Calibration comes from `calibration_offset`, as for every other source. The cali
 
 - Reorders packets within a 3-packet window. A missing packet is declared lost and replaced with silence once three newer ones have arrived.
 - Pacing follows the **ESP32's sample clock** (packet arrival), so there's no drift between the board and the server.
-- During an outage (no packets for 0.25 s), it emits silence at real-time pace, so the meter drops to 0 and recordings don't stall. It resumes cleanly when packets return.
+- Late packets are waited for up to 1 s, so Wi-Fi delivering audio late in a burst (common on busy 2.4 GHz channels) is played rather than replaced by silence. During a real outage (no packets for 1 s), it emits silence at real-time pace, so the meter drops to 0 and recordings don't stall. It resumes cleanly when packets return.
 - A sequence number far behind the current one (> 1000 packets) means the board rebooted, and it resyncs automatically. Gaps over 50 packets mid-stream skip ahead instead of filling.
 
 #### Testing without the bot
@@ -223,7 +223,7 @@ Event recordings, from every source, are saved as **32-bit float WAV**, scaled b
 |---|---|
 | Meter stuck at **0.0 dB(A)** | The offset is far too low (readings are clamped at 0), or no audio is arriving. Check the log. |
 | `Waiting for ESP32 stream, emitting silence` | No UDP packets: wrong target IP/port on the board, a firewall/VLAN rule, or Docker networking (see above). |
-| `No audio packets for …s` repeating | Weak Wi-Fi. Check the board's RSSI, and use mono rather than stereo. |
+| `No audio packets for …s` repeating | Wi-Fi trouble: a weak signal, or a congested 2.4 GHz channel (check the access point's retry rate and channel utilisation, and try a quieter channel or a closer AP). Use mono rather than stereo. |
 | `Seq jumped back …, ESP32 restarted` | The board rebooted. Harmless once; if it repeats, check power and the board's watchdog logs. |
 | `RTSP audio: short read … reconnecting` repeating | The camera or NVR is dropping the stream. Check the URL, check that audio is enabled, and try the console/NVR IP rather than the camera's. |
 | Settings shows "USB Microphone (hw:1,0)" | Placeholder when the container has no sound card. The device list is ignored for `rtsp`/`udp`. |

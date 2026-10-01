@@ -37,7 +37,7 @@ DEFAULT_FRAMES_PER_PACKET = 480
 
 REORDER_WINDOW = 3     # packets: a missing seq is lost once this many newer ones arrived
 MAX_GAP_FILL = 50      # packets: bigger mid-stream gaps resync instead of filling
-OUTAGE_TIMEOUT = 0.25  # s without packets before emitting paced silence
+OUTAGE_TIMEOUT = 1.0   # s without packets before emitting paced silence; Wi-Fi delivery can lag ~0.5 s in bursts
 RESET_THRESHOLD = 1000 # packets: seq this far behind means the ESP32 rebooted
 MAX_BUFFERED = 500     # packets held waiting for playout
 
