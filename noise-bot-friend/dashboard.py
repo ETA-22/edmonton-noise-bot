@@ -1146,10 +1146,12 @@ HTML_DASHBOARD = """<!DOCTYPE html>
               <div>
                 <div class="flex justify-between items-center mb-1">
                   <label class="text-xs font-semibold text-slate-700">Horizontal Setback from Road</label>
-                  <span id="setbackLabelText" class="text-xs font-mono font-bold text-indigo-600">5.0 m</span>
+                  <span class="text-xs font-mono font-bold text-indigo-600 whitespace-nowrap">
+                    <input type="number" id="cfgSetbackMeters" min="0.5" max="1000" step="0.5" value="5" oninput="calculateTriangulation()" class="w-20 text-right bg-white border border-slate-300 rounded-md px-1.5 py-0.5 font-mono font-bold text-indigo-600"> m
+                  </span>
                 </div>
-                <input type="range" id="cfgSetbackMeters" min="1" max="60" step="0.5" value="5" oninput="calculateTriangulation()" class="w-full accent-indigo-600">
-                <p class="text-[10px] text-slate-500 mt-1">Distance from building edge to road lane</p>
+                <input type="range" id="cfgSetbackSlider" min="1" max="60" step="0.5" value="5" oninput="document.getElementById('cfgSetbackMeters').value = this.value; calculateTriangulation()" class="w-full accent-indigo-600">
+                <p class="text-[10px] text-slate-500 mt-1">Distance from building edge to road lane. Type a value for more than 60 m.</p>
               </div>
             </div>
 
@@ -1328,7 +1330,8 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       const finalDist = Math.max(0.5, dist);
 
       document.getElementById('floorLabelText').innerText = 'Floor ' + floor + ' (~' + height.toFixed(0) + 'm height)';
-      document.getElementById('setbackLabelText').innerText = setback.toFixed(1) + ' m';
+      const setbackSlider = document.getElementById('cfgSetbackSlider');
+      if (setbackSlider) setbackSlider.value = Math.min(setback, parseFloat(setbackSlider.max));
       document.getElementById('triangulatedDistText').innerText = finalDist.toFixed(1) + ' meters';
 
       const loss = 20 * Math.log10(finalDist / 0.5);
