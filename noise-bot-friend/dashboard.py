@@ -74,7 +74,7 @@ def load_config():
         "floor_number": 3,
         "horizontal_setback_meters": 5.0,
         "distance_to_road_meters": 10.3,
-        "threshold_dba": 75.0,
+        "threshold_dba": 70.0,
         "calibration_offset": 50.0
     }
 
@@ -2235,7 +2235,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
           calculateTriangulation();
           renderEvents();
           updateStationBranding(loadedConfig.station_name || loadedConfig.location_name, loadedConfig.street_name, loadedConfig.location_name, fNum, sMeters);
-          document.getElementById('cfgThreshold').value = loadedConfig.threshold_dba || 75;
+          document.getElementById('cfgThreshold').value = loadedConfig.threshold_dba || 70;
           document.getElementById('cfgOffset').value = loadedConfig.calibration_offset || 50;
 
           const devSelect = document.getElementById('cfgAudioDevice');
