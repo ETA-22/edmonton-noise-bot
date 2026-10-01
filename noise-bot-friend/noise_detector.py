@@ -146,6 +146,16 @@ def get_hardware_station_id(cfg=None):
         pass
     return "noise-bot-station"
 
+def event_time_from_filename(filename):
+    """Event time (epoch) from noise_event_YYYYMMDD_HHMMSS_..., which is stamped in UTC; None if absent."""
+    m = re.match(r"noise_event_(\d{8})_(\d{6})_", os.path.basename(filename))
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
 def upload_recording_to_hub(wav_path, event_meta):
     if not wav_path or not os.path.exists(wav_path):
         return
@@ -174,7 +184,8 @@ def upload_recording_to_hub(wav_path, event_meta):
             "tailpipe_dba": float(event_meta.get("tailpipe_dba", 95.0)),
             "tag": event_meta.get("tag", "traffic"),
             "audio_b64": audio_b64,
-            "timestamp": time.time()
+            # When the event happened, not when it was uploaded (matters for backlog uploads)
+            "timestamp": event_time_from_filename(filename) or time.time()
         }
         
         endpoint = f"{hub_url}/api/recordings/upload"
