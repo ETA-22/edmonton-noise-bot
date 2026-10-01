@@ -52,7 +52,7 @@ LIVE_STATE_FILE = os.path.join(BASE_DIR, "live_audio_state.json")
 LOG_FILE = os.path.join(BASE_DIR, "noise_bot.log")
 FLEET_DB_FILE = os.path.join(BASE_DIR, "fleet_database.json")
 
-ALLOWED_TAGS = ["traffic", "vehicle", "ets", "weather", "siren", "construction", "misc", "review"]
+ALLOWED_TAGS = ["traffic", "vehicle", "ets", "bbq", "weather", "siren", "construction", "impulse", "misc", "review"]
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -909,6 +909,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
               <option value="construction">🏗️ Construction</option>
               <option value="weather">🌧️ Weather / Wind</option>
               <option value="bbq">🍖 BBQ / Patio</option>
+              <option value="impulse">💥 Impulse / Bang</option>
               <option value="misc">❓ Misc / Other</option>
               <option value="review">⚠️ Needs Review</option>
             </select>
@@ -1896,9 +1897,14 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         construction: '🏗️ Construction',
         weather: '🌧️ Weather',
         bbq: '🍖 BBQ',
+        impulse: '💥 Impulse',
         misc: '❓ Misc',
         review: '⚠️ Review'
       };
+      // One list drives the per-event dropdown; aliases map to their canonical tag, and any
+      // other tag gets its own option instead of silently showing as the first one
+      const TAG_ALIASES = { vehicle: 'traffic', bus: 'ets', patio: 'bbq' };
+      const TAG_OPTIONS = ['traffic', 'ets', 'bbq', 'siren', 'construction', 'weather', 'impulse', 'misc', 'review'];
 
       const trafficEvents = allEvents.filter(e => {
         const t = (e.tag || '').toLowerCase();
@@ -1980,29 +1986,19 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       }
 
       tbody.innerHTML = pageEvents.map((ev, idx) => {
-        const isTraffic = ev.tag === 'traffic' || ev.tag === 'vehicle';
         const isEts = ev.tag === 'ets' || ev.tag === 'bus';
         const isBbq = ev.tag === 'bbq' || ev.tag === 'patio';
-        const isSiren = ev.tag === 'siren';
-        const isConst = ev.tag === 'construction';
-        const isWeather = ev.tag === 'weather';
-        const isMisc = ev.tag === 'misc';
-        const isReview = ev.tag === 'review';
         const tagLabel = tagLabels[ev.tag] || `🏷️ ${ev.tag}`;
+        const canonTag = TAG_ALIASES[(ev.tag || '').toLowerCase()] || (ev.tag || '').toLowerCase();
+        const tagOptions = [...TAG_OPTIONS, ...(TAG_OPTIONS.includes(canonTag) ? [] : [canonTag])]
+          .map(t => `<option value="${t}" ${t === canonTag ? 'selected' : ''}>${tagLabels[t] || `🏷️ ${t}`}</option>`).join('');
         const curDist = (loadedConfig && loadedConfig.distance_to_road_meters) ? loadedConfig.distance_to_road_meters : 7.0;
         const lossDb = 20 * Math.log10(Math.max(0.5, curDist) / 0.5);
         const tailpipeDba = (ev.dba !== undefined && ev.dba !== null) ? (Math.round((ev.dba + lossDb) * 10) / 10) : ((ev.tailpipe_dba !== undefined && ev.tailpipe_dba !== null) ? ev.tailpipe_dba : '--');
 
         const classificationCell = isAdmin ? `
           <select onchange="reclassifyEvent('${ev.filename}', this.value)" class="bg-white border-2 border-indigo-200 hover:border-indigo-400 text-xs font-bold text-slate-800 rounded-lg px-2.5 py-1.5 cursor-pointer shadow-sm focus:ring-2 focus:ring-indigo-500 transition">
-            <option value="traffic" ${isTraffic ? 'selected' : ''}>🚗 Traffic</option>
-            <option value="ets" ${isEts ? 'selected' : ''}>🚌 ETS</option>
-            <option value="bbq" ${isBbq ? 'selected' : ''}>🍖 BBQ</option>
-            <option value="siren" ${isSiren ? 'selected' : ''}>🚨 Siren</option>
-            <option value="construction" ${isConst ? 'selected' : ''}>🏗️ Construction</option>
-            <option value="weather" ${isWeather ? 'selected' : ''}>🌧️ Weather</option>
-            <option value="misc" ${isMisc ? 'selected' : ''}>❓ Misc</option>
-            <option value="review" ${isReview ? 'selected' : ''}>⚠️ Review</option>
+            ${tagOptions}
           </select>
         ` : `
           <span class="px-2.5 py-1 ${isEts ? 'bg-sky-50 text-sky-800 border-sky-200' : isBbq ? 'bg-amber-100 text-amber-900 border-amber-300' : 'bg-slate-100 text-slate-700 border-slate-200'} border rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 shadow-xs">
