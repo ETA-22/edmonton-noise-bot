@@ -1166,8 +1166,26 @@ HTML_DASHBOARD = """<!DOCTYPE html>
           </div>
 
           <div>
+            <label class="block text-xs font-semibold text-slate-600 uppercase mb-2">Audio Source</label>
+            <select id="cfgAudioSource" onchange="updateAudioSourceFields()" class="w-full bg-white border border-slate-300 rounded-xl p-3 text-slate-900 shadow-sm">
+              <option value="pyaudio">🎤 USB Microphone</option>
+              <option value="rtsp">📹 IP Camera (RTSP stream)</option>
+              <option value="udp">📶 ESP32 Microphone (UDP)</option>
+            </select>
+          </div>
+          <div id="srcFieldsPyaudio">
             <label class="block text-xs font-semibold text-slate-600 uppercase mb-2">Microphone Device</label>
             <select id="cfgAudioDevice" class="w-full bg-white border border-slate-300 rounded-xl p-3 text-slate-900 shadow-sm"></select>
+          </div>
+          <div id="srcFieldsRtsp" class="hidden">
+            <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">RTSP Stream URL</label>
+            <input type="password" id="cfgRtspUrl" autocomplete="off" spellcheck="false" placeholder="rtsps://camera-or-nvr:7441/stream-alias" class="w-full bg-white border border-slate-300 rounded-xl p-3 text-slate-900 shadow-sm font-mono text-sm">
+            <p class="text-[11px] text-slate-500 mt-1">Usually contains a password or token. It's stored only in config.json. The first audio track is used, resampled to 48 kHz mono.</p>
+          </div>
+          <div id="srcFieldsUdp" class="hidden">
+            <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">UDP Port</label>
+            <input type="number" id="cfgUdpPort" min="1" max="65535" step="1" class="w-full bg-white border border-slate-300 rounded-xl p-3 text-slate-900 shadow-sm">
+            <p class="text-[11px] text-slate-500 mt-1">Point the ESP32 at this server's IP address on this port.</p>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -2229,6 +2247,12 @@ HTML_DASHBOARD = """<!DOCTYPE html>
             devSelect.value = loadedConfig.audio_device_index;
           }
 
+          const src = loadedConfig.audio_source || {};
+          document.getElementById('cfgAudioSource').value = ['rtsp', 'udp'].includes(src.type) ? src.type : 'pyaudio';
+          document.getElementById('cfgRtspUrl').value = src.url || '';
+          document.getElementById('cfgUdpPort').value = src.port || 5005;
+          updateAudioSourceFields();
+
           document.getElementById('cfgBlueskyEnabled').checked = loadedConfig.bluesky?.enabled || false;
           document.getElementById('cfgBlueskyHandle').value = loadedConfig.bluesky?.handle || '';
           document.getElementById('cfgBlueskyPassword').value = loadedConfig.bluesky?.app_password || '';
@@ -2252,7 +2276,36 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       }
     }
 
+    function updateAudioSourceFields() {
+      const type = document.getElementById('cfgAudioSource').value;
+      document.getElementById('srcFieldsPyaudio').classList.toggle('hidden', type !== 'pyaudio');
+      document.getElementById('srcFieldsRtsp').classList.toggle('hidden', type !== 'rtsp');
+      document.getElementById('srcFieldsUdp').classList.toggle('hidden', type !== 'udp');
+    }
+
+    function readAudioSourceFields() {
+      const type = document.getElementById('cfgAudioSource').value;
+      const url = document.getElementById('cfgRtspUrl').value.trim();
+      const port = parseInt(document.getElementById('cfgUdpPort').value);
+      if (type === 'rtsp' && !['rtsp://', 'rtsps://'].some(pfx => url.toLowerCase().startsWith(pfx))) throw new Error('Enter an RTSP stream URL starting with rtsp:// or rtsps://');
+      if (type === 'udp' && !(port >= 1 && port <= 65535)) throw new Error('Enter a UDP port between 1 and 65535');
+      // Keep keys for the other sources so switching back doesn't lose them
+      return {
+        ...(loadedConfig.audio_source || {}),
+        type,
+        url,
+        port: port >= 1 && port <= 65535 ? port : 5005
+      };
+    }
+
     async function saveSettings() {
+      let audioSource;
+      try {
+        audioSource = readAudioSourceFields();
+      } catch (eSrc) {
+        alert(eSrc.message);
+        return;
+      }
       const codeInp = document.getElementById('adminPasscode');
       const code = (codeInp && codeInp.value ? codeInp.value.trim() : '') || sessionStorage.getItem('station_admin_passcode') || currentAdminPasscode || '1811';
       const devVal = document.getElementById('cfgAudioDevice') ? document.getElementById('cfgAudioDevice').value : '';
@@ -2270,6 +2323,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         horizontal_setback_meters: sMeters,
         distance_to_road_meters: finalDist,
         audio_device_index: devVal !== "" ? parseInt(devVal) : null,
+        audio_source: audioSource,
         threshold_dba: parseFloat(document.getElementById('cfgThreshold').value),
         calibration_offset: parseFloat(document.getElementById('cfgOffset').value),
         bluesky: {
