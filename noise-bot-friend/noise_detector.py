@@ -633,6 +633,11 @@ def main():
                                 wf.close()
 
                             tag = classify_audio(temp_path)
+                            # The ETS test relies on a bus being a long steady drone among short car
+                            # passes; far from the road ordinary traffic blends into one, so stations
+                            # can opt out with "detect_ets": false
+                            if tag == "ets" and not config.get("detect_ets", True):
+                                tag = "vehicle"
                             final_filename = f"noise_event_{timestamp}_{int(event_peak_dba)}dba_{tag}.wav"
                             wav_path = os.path.join(output_dir, final_filename)
                             os.rename(temp_path, wav_path)
